@@ -4,3 +4,6 @@ __global__ void mma_matmul_2_0(const half *A, const half *B, float *C, int M, in
 __global__ void mma_matmul_2_1(const half *A, const half *B, float *C, int M, int N, int K);
 __global__ void mma_matmul_3_0(const half *A, const half *B, float *C, int M, int N, int K);
 __global__ void mma_matmul_3_1(const half *A, const half *B, float *C, int M, int N, int K);
+__global__ void mma_matmul_3_2(const half *A, const half *B, float *C, int M, int N, int K);
+__global__ void mma_matmul_3_3(const half *A, const half *B, float *C, int M, int N, int K);
+__global__ void mma_matmul_3_4(const half *A, const half *B, float *C, int M, int N, int K);

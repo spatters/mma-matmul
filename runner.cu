@@ -54,9 +54,19 @@ __global__ void shmem_matmul(const half *A, const half *B, float *C, int M, int 
 }
 
 float uniform_rand() {
-  return (float)rand() / (float)RAND_MAX;
+  float u = (float)rand() / (float)RAND_MAX;
+  return u;
 }
 
+// very hacky approx standard normal generator
+float normal_rand() {
+  float u = 0; 
+  for (int i=0; i<12; i++) 
+  {
+    u += ((float)rand() / (float)RAND_MAX);
+  }
+  return (u - 6.) ;
+}
 void host_transpose(half *src, half *dst, int M, int N) {
   for (int i=0; i < M; i++) {
     for (int j=0; j < N; j++) {
@@ -69,7 +79,7 @@ void init_uniform_half(half **host, half **device, int M, int N) {
   *host = new half[M * N];
   cudaMalloc(device, M * N * sizeof(half));
   for (int i=0; i < M*N; i++) {
-    (*host)[i] = __float2half(uniform_rand());
+    (*host)[i] = __float2half(normal_rand());
   }
   cudaMemcpy(*device, *host, M * N * sizeof(half), cudaMemcpyHostToDevice);
 }
@@ -91,6 +101,15 @@ void init_zero_float(float** host, float **device, int M, int N) {
   cudaMemcpy(*device, *host, M * N * sizeof(float), cudaMemcpyHostToDevice);
 }
 
+void init_zero_half(half** host, half **device, int M, int N) {
+  *host = new half[M * N];
+  cudaMalloc(device, M * N * sizeof(half));
+  for (int i=0; i < M*N; i++) {
+    (*host)[i] = 0.;
+  }
+  cudaMemcpy(*device, *host, M * N * sizeof(half), cudaMemcpyHostToDevice);
+}
+
 void run_cublas_kernel(int numReps, half *A, half *B, float *C, int M, int N, int K) {
   cublasStatus_t stat;   // cuBLAS functions status
   cublasHandle_t handle; // cuBLAS context
@@ -101,6 +120,31 @@ void run_cublas_kernel(int numReps, half *A, half *B, float *C, int M, int N, in
   cublasComputeType_t computeType = CUBLAS_COMPUTE_32F;
   float alpha = 1.0;
   float beta = 0.0;
+  for (int i=0; i<numReps; i++) {
+    stat = cublasGemmEx(handle, 
+        CUBLAS_OP_N, CUBLAS_OP_N, 
+        N, M, K, 
+        (void*)&alpha, 
+        (void*)B, bType, K, 
+        (void*)A, aType, M, 
+        (void*)&beta, 
+        (void*)C, cType, M, 
+        computeType, CUBLAS_GEMM_DEFAULT);
+  }
+  const char* statStr = cublasGetStatusName(stat);
+  printf("cublasSgemm status %s.\n", statStr);
+}
+
+void run_cublas_fp16_kernel(int numReps, half *A, half *B, half *C, int M, int N, int K) {
+  cublasStatus_t stat;   // cuBLAS functions status
+  cublasHandle_t handle; // cuBLAS context
+  stat = cublasCreate(&handle); // initialize CUBLAS context
+  cudaDataType_t aType = CUDA_R_16F;
+  cudaDataType_t bType = CUDA_R_16F;
+  cudaDataType_t cType = CUDA_R_16F;
+  cublasComputeType_t computeType = CUBLAS_COMPUTE_16F;
+  half alpha = 1.0;
+  half beta = 0.0;
   for (int i=0; i<numReps; i++) {
     stat = cublasGemmEx(handle, 
         CUBLAS_OP_N, CUBLAS_OP_N, 
@@ -151,6 +195,21 @@ void run_mma_kernel(int kernelNum, int numReps, half *A, half *B, half *B_T, flo
         mma_grid.y = ceilDiv(GLOBAL_N, 128);
         mma_matmul_3_1<<<mma_grid, mma_block>>>(A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
         break;
+      case 32:
+        mma_grid.x = ceilDiv(GLOBAL_M, 128);
+        mma_grid.y = ceilDiv(GLOBAL_N, 128);
+        mma_matmul_3_2<<<mma_grid, mma_block>>>(A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
+        break;
+      case 33:
+        mma_grid.x = ceilDiv(GLOBAL_M, 128);
+        mma_grid.y = ceilDiv(GLOBAL_N, 128);
+        mma_matmul_3_3<<<mma_grid, mma_block>>>(A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
+        break;
+      case 34:
+        mma_grid.x = ceilDiv(GLOBAL_M, 128);
+        mma_grid.y = ceilDiv(GLOBAL_N, 128);
+        mma_matmul_3_4<<<mma_grid, mma_block>>>(A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
+        break;
     }
   }
 }
@@ -158,24 +217,38 @@ void run_mma_kernel(int kernelNum, int numReps, half *A, half *B, half *B_T, flo
 int main(int argc, char **argv){
   if (argc != 2) {
     printf("Please supply kernel number as argument.\n");
-    printf("Valid Kernel Numbers: 0, 10, 11, 20, 21, 30, 31.\n");
+    printf("Valid Kernel Numbers: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34.\n");
     exit(EXIT_FAILURE);
   }
   int kernelNum = atoi(argv[1]);
-  int validKernels[7] = {0, 10, 11, 20, 21, 30, 31};
-  bool validKernelNum = in_array(kernelNum, validKernels, 7);
+  int validKernels[11] = {0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34};
+  bool validKernelNum = in_array(kernelNum, validKernels, 11);
   if (not validKernelNum) {
-    printf("Kernel Num: %d not recognized. Valid Kernel Nums: 0, 10, 11, 20, 21, 30, 31.\n", kernelNum);
+    printf("Kernel Num: %d not recognized. Valid Kernel Nums: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34 \n", kernelNum);
     exit(EXIT_FAILURE);
   }
   printf("Running Kernel %d.%d\n", kernelNum/10, kernelNum%10);
   float *h_C1, *h_C2, *d_C1, *d_C2;
-  half  *h_A, *h_B, *h_B_T, *d_A, *d_B, *d_B_T;
+  half  *h_A, *h_B, *h_B_T, *d_A, *d_B, *d_B_T, *h_C3, *d_C3;
 
   init_uniform_half(&h_A, &d_A, GLOBAL_M, GLOBAL_K);
   init_uniform_half(&h_B, &d_B, GLOBAL_K, GLOBAL_N);
+
+  half max_val = 0.;
+  half min_val = 0.;
+  half avg_val = 0.;
+  for (int i=0; i < GLOBAL_M*GLOBAL_K; i++) {
+    avg_val += h_A[i]/(half)(GLOBAL_M*GLOBAL_K);
+    if (h_A[i] < min_val)
+      min_val = h_A[i];
+    if (h_A[i] > max_val)
+      max_val = h_A[i];
+  }
+  printf("avg A val %f, max A val %f, min A val: %f\n", (float) avg_val, (float) max_val, (float) min_val);
+
   init_zero_float(&h_C1, &d_C1, GLOBAL_M, GLOBAL_N);
   init_zero_float(&h_C2, &d_C2, GLOBAL_M, GLOBAL_N);
+  init_zero_half(&h_C3, &d_C3, GLOBAL_M, GLOBAL_N);
   cudaCheckErrors("cudaMemcpy malloc / H2D failure");
 
   // Launch reference kernel
@@ -193,15 +266,24 @@ int main(int argc, char **argv){
   cudaCheckErrors("cudaMemcpy malloc / H2D failure");
 
   // run kernel in loop to profile
-  if (kernelNum == 0) {
-    run_cublas_kernel(TOTAL_REPS, d_A, d_B, d_C2, GLOBAL_M, GLOBAL_N, GLOBAL_K);
+  switch (kernelNum) {
+    case 0:
+      run_cublas_kernel(TOTAL_REPS, d_A, d_B, d_C2, GLOBAL_M, GLOBAL_N, GLOBAL_K);
+      break;
+    case 1:
+      run_cublas_fp16_kernel(TOTAL_REPS, d_A, d_B, d_C3, GLOBAL_M, GLOBAL_N, GLOBAL_K);
+      break;
+    default:
+      run_mma_kernel(kernelNum, TOTAL_REPS, d_A, d_B, d_B_T, d_C2, GLOBAL_M, GLOBAL_N, GLOBAL_K);
   }
-  else {
-    run_mma_kernel(kernelNum, TOTAL_REPS, d_A, d_B, d_B_T, d_C2, GLOBAL_M, GLOBAL_N, GLOBAL_K);
-  }
-
   cudaCheckErrors("mma kernal failure");
   cudaMemcpy(h_C2, d_C2, GLOBAL_M * GLOBAL_N *sizeof(float), cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_C3, d_C3, GLOBAL_M * GLOBAL_N *sizeof(half), cudaMemcpyDeviceToHost);
+  if (kernelNum==1) {
+    for (int i=0; i < GLOBAL_M * GLOBAL_N; i++) {
+      h_C2[i] = __half2float(h_C3[i]);
+    }
+  }
 
   // check output vs reference kernel
   float diff = 0.;
@@ -216,7 +298,7 @@ int main(int argc, char **argv){
     abs_diff = abs(diff);
     avg_abs_diff += abs_diff / (float)(GLOBAL_M * GLOBAL_N);
     avg_diff += diff / (float)(GLOBAL_M * GLOBAL_N);
-    avg_out_val += h_C1[i] / (float)(GLOBAL_M * GLOBAL_N);
+    avg_out_val += h_C2[i] / (float)(GLOBAL_M * GLOBAL_N);
     if (abs_diff > max_abs_diff)
       max_abs_diff = abs_diff;
   }
