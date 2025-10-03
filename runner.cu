@@ -4,6 +4,7 @@
 #include "mma_kernels.cuh"
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
+#include <cudaTypedefs.h>
 
 // error checking macro
 #define cudaCheckErrors(msg) \
@@ -75,6 +76,12 @@ void host_transpose(half *src, half *dst, int M, int N) {
   }
 }
 
+void fill_arange(half *host, int M, int K) {
+  for (int i=0; i < M*K; i++) {
+    host[i] = (half)i;
+  }
+}
+
 void init_uniform_half(half **host, half **device, int M, int N) {
   *host = new half[M * N];
   cudaMalloc(device, M * N * sizeof(half));
@@ -108,6 +115,48 @@ void init_zero_half(half** host, half **device, int M, int N) {
     (*host)[i] = 0.;
   }
   cudaMemcpy(*device, *host, M * N * sizeof(half), cudaMemcpyHostToDevice);
+}
+
+void create_tensor_map(half* globalPtr, CUtensorMap* tensor_map) {
+  //CUtensorMap tensor_map{};
+  // rank is the number of dimensions of the array.
+  constexpr uint32_t rank = 2;
+  uint64_t size[rank] = {GLOBAL_K, GLOBAL_M};
+  // The stride is the number of bytes to traverse from the first element of one row to the next.
+  // It must be a multiple of 16.
+  uint64_t stride[rank - 1] = {GLOBAL_K * sizeof(half)};
+  // The box_size is the size of the shared memory buffer that is used as the
+  // destination of a TMA transfer.
+  uint32_t box_size[rank] = {32, 128};
+  // The distance between elements in units of sizeof(element). A stride of 2
+  // can be used to load only the real component of a complex-valued tensor, for instance.
+  uint32_t elem_stride[rank] = {1, 1};
+
+  // Get a function pointer to the cuTensorMapEncodeTiled driver API.
+  //auto cuTensorMapEncodeTiled = get_cuTensorMapEncodeTiled();
+
+  // Create the tensor descriptor.
+  CUresult res = cuTensorMapEncodeTiled(
+    //&tensor_map,                // CUtensorMap *tensorMap,
+    tensor_map,                // CUtensorMap *tensorMap,
+    CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
+    rank,                       // cuuint32_t tensorRank,
+    globalPtr,                 // void *globalAddress,
+    size,                       // const cuuint64_t *globalDim,
+    stride,                     // const cuuint64_t *globalStrides,
+    box_size,                   // const cuuint32_t *boxDim,
+    elem_stride,                // const cuuint32_t *elementStrides,
+    // Interleave patterns can be used to accelerate loading of values that
+    // are less than 4 bytes long.
+    CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
+    // Swizzling can be used to avoid shared memory bank conflicts.
+    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_64B,
+    // L2 Promotion can be used to widen the effect of a cache-policy to a wider
+    // set of L2 cache lines.
+    CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
+    // Any element that is outside of bounds will be set to zero by the TMA transfer.
+    CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+  );
 }
 
 void run_cublas_kernel(int numReps, half *A, half *B, float *C, int M, int N, int K) {
@@ -210,6 +259,15 @@ void run_mma_kernel(int kernelNum, int numReps, half *A, half *B, half *B_T, flo
         mma_grid.y = ceilDiv(GLOBAL_N, 128);
         mma_matmul_3_4<<<mma_grid, mma_block>>>(A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
         break;
+      case 40:
+        mma_grid.x = ceilDiv(GLOBAL_M, 128);
+        mma_grid.y = ceilDiv(GLOBAL_N, 128);
+        CUtensorMap tensor_map_A{};
+        create_tensor_map(A, &tensor_map_A);
+        CUtensorMap tensor_map_B{};
+        create_tensor_map(B, &tensor_map_B);
+        wgmma_matmul_4_0<<<mma_grid, mma_block>>>(tensor_map_A, tensor_map_B, A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
+        break;
     }
   }
 }
@@ -217,14 +275,14 @@ void run_mma_kernel(int kernelNum, int numReps, half *A, half *B, half *B_T, flo
 int main(int argc, char **argv){
   if (argc != 2) {
     printf("Please supply kernel number as argument.\n");
-    printf("Valid Kernel Numbers: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34.\n");
+    printf("Valid Kernel Numbers: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34, 40\n");
     exit(EXIT_FAILURE);
   }
   int kernelNum = atoi(argv[1]);
-  int validKernels[11] = {0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34};
-  bool validKernelNum = in_array(kernelNum, validKernels, 11);
+  int validKernels[12] = {0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34, 40};
+  bool validKernelNum = in_array(kernelNum, validKernels, 12);
   if (not validKernelNum) {
-    printf("Kernel Num: %d not recognized. Valid Kernel Nums: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34 \n", kernelNum);
+    printf("Kernel Num: %d not recognized. Valid Kernel Nums: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34, 40\n", kernelNum);
     exit(EXIT_FAILURE);
   }
   printf("Running Kernel %d.%d\n", kernelNum/10, kernelNum%10);
@@ -261,6 +319,9 @@ int main(int argc, char **argv){
   // transpose B as Kernel 2.0 on require B to be column-major
   h_B_T = new half[GLOBAL_N * GLOBAL_K];
   host_transpose(h_B, h_B_T, GLOBAL_K, GLOBAL_N);
+  // debug
+  fill_arange(h_A, GLOBAL_M, GLOBAL_K);
+  cudaMemcpy(d_A, h_A, GLOBAL_M * GLOBAL_K * sizeof(half), cudaMemcpyHostToDevice);
   cudaMalloc(&d_B_T, GLOBAL_N * GLOBAL_K * sizeof(half));
   cudaMemcpy(d_B_T, h_B_T, GLOBAL_N * GLOBAL_K * sizeof(half), cudaMemcpyHostToDevice);
   cudaCheckErrors("cudaMemcpy malloc / H2D failure");
