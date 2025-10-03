@@ -22,6 +22,16 @@ __device__ void load_matrix_x2(unsigned *destReg, uint4 *srcAddr) {
 }
 
 __forceinline__ 
+__device__ void load_matrix_x2_trans(unsigned *destReg, uint4 *srcAddr) {
+  unsigned ptxSrcAddr = __cvta_generic_to_shared(srcAddr);
+  asm volatile(
+      "ldmatrix.sync.aligned.x2.m8n8.trans.shared.b16 {%0, %1}, [%2];\n"
+      : "=r"(destReg[0]), "=r"(destReg[1])
+      :  "r"(ptxSrcAddr)
+      );
+}
+
+__forceinline__ 
 __device__ void mma_m16n8k16(const unsigned *A, const unsigned *B, float *C, float *D) {
   asm(
       "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
@@ -66,6 +76,7 @@ __global__ void mma_matmul_2_0(const half *A, const half *B, float *C, int M, in
   int loadColA = (laneID / 16 + 4 * (laneID % 2)) ^ (loadRowA % 4);
   int loadRowB = (laneID % 8) / 2;
   int loadColB = (laneID / 8 + 4 * (laneID % 2)) ^ (loadRowB % 4);
+
 
   for (int k = 0; k < K/8; k += 4) {
     As[storeRow][storeCol] = globalTileA[(warpID*8 + laneID/4)*K/8 + k + laneID%4];
