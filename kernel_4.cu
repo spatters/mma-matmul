@@ -91,8 +91,8 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
 
 
   if (threadIdx.x == 0) {
-    init(&barA, blockDim.x);
-    init(&barB, blockDim.x);
+    init(&barA, blockDim.x * blockDim.y);
+    init(&barB, blockDim.x * blockDim.y);
     cde::fence_proxy_async_shared_cta();
   }
 
