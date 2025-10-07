@@ -10,6 +10,50 @@ namespace cde = cuda::device::experimental;
 
 
 __forceinline__
+__device__ uint64_t matrix_descriptor_encode(uint32_t x) {
+  return (x & 0x3FFFF) >> 4;
+}
+
+
+__forceinline__
+__device__ uint64_t update_start_addr(uint64_t base_descriptor, uint32_t shmem_start_addr) {
+  base_descriptor &= (~(1ULL << 14));
+  base_descriptor |= matrix_descriptor_encode(shmem_start_addr);
+  return base_descriptor;
+}
+
+
+__forceinline__
+__device__ uint64_t get_matrix_descriptor(uint32_t shmem_start_addr, uint32_t LBO, uint32_t SBO, uint32_t swizzle_mode) {
+  uint64_t base_descriptor = 0;
+  base_descriptor |= matrix_descriptor_encode(shmem_start_addr);
+  base_descriptor |= (matrix_descriptor_encode(LBO) << 16);
+  base_descriptor |= (matrix_descriptor_encode(SBO) << 32);
+  // BASE OFFSET set to 0
+  base_descriptor |= (matrix_descriptor_encode(swizzle_mode) << 62);
+  return base_descriptor;
+}
+
+
+//__forceinline__
+__device__ void wgmma_fence() {
+  asm volatile("wgmma.fence.sync.aligned;\n" ::);
+}
+
+
+__forceinline__
+__device__ void wgmma_commit_group() {
+  asm volatile("wgmma.commit_group.sync.aligned;\n" ::);
+}
+
+
+__forceinline__
+__device__ void wgmma_wait_all() {
+  asm volatile("wgmma.wait_group.sync.aligned %0;\n" :: "n"(0));
+}
+
+
+__forceinline__
 __device__ void cp_async(uint4 *dstAddr, const uint4 *srcAddr) {
   unsigned ptxDstAddr = __cvta_generic_to_shared(dstAddr);
   asm volatile("cp.async.cg.shared.global.L2::128B [%0], [%1], %2;\n"
@@ -65,10 +109,36 @@ __device__ void mma_m16n8k16_f16(const unsigned *A, const unsigned *B, unsigned 
       );
 }
 
+__forceinline__ 
+__device__ void wgmma_m64n64k16(const uint64_t a_desc, const uint64_t b_desc, float *D) {
+  asm (
+      //"mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+      "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
+      "{%0, %1, %2, %3, %4, %5, %6, %7,"
+       "%8, %9, %10, %11, %12, %13, %14, %15,"
+       "%16, %17, %18, %19, %20, %21, %22, %23,"
+       "%24, %25, %26, %27, %28, %29, %30, %31},"
+       "%32, %33,"
+       "%34,"
+       "%35, %36,"
+       "%37, %38;\n"
+      : "+f"(D[0]), "+f"(D[1]), "+f"(D[2]), "+f"(D[3]), "+f"(D[4]), "+f"(D[5]), "+f"(D[6]), "+f"(D[7]),
+        "+f"(D[8]), "+f"(D[9]), "+f"(D[10]), "+f"(D[11]), "+f"(D[12]), "+f"(D[13]), "+f"(D[14]), "+f"(D[15]),
+        "+f"(D[16]), "+f"(D[17]), "+f"(D[18]), "+f"(D[19]), "+f"(D[20]), "+f"(D[21]), "+f"(D[22]), "+f"(D[23]),
+        "+f"(D[24]), "+f"(D[25]), "+f"(D[26]), "+f"(D[27]), "+f"(D[28]), "+f"(D[29]), "+f"(D[30]), "+f"(D[31])
+      :
+      "l"(a_desc), "l"(b_desc),
+      "n"(1),
+      "n"(1), "n"(1)
+      "n"(0), "n"(0)
+      );
+}
+
 // Kernel 4.0: WAGMI
 __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map_A, const 	__grid_constant__ CUtensorMap tensor_map_B, const half *A, const half *B, float *C, int M, int N, int K) {
-  __shared__ __align__(1024) half As[128][32];
-  __shared__ __align__(1024) half Bs[128][32];
+  __shared__ __align__(1024) half As[64*32];
+  __shared__ __align__(1024) half Bs[64*32];
+  float dReg[32] = {0.0f};
 
   // Initialize shared memory barrier
   #pragma nv_diag_suppress static_var_with_dynamic_init
@@ -88,6 +158,10 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
   int laneID = threadID % 32;
   int warpOffsetA = 16 * (warpID / 4);
   int warpOffsetB = 8 * (warpID % 4);
+  uint64_t a_desc, b_desc;
+  constexpr int LBO = 1;
+  constexpr int SBO = 512;
+  constexpr int swizzle_mode = 2; //  64B swizzle
 
 
   if (threadIdx.x == 0) {
@@ -99,20 +173,33 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
    __syncthreads();
   barrier::arrival_token tokenA;
   barrier::arrival_token tokenB;
-  if (threadIdx.x == 0) {
-    // Initiate bulk tensor copy from global to shared memory,
-    // in the same way as without swizzle.
-    cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, blockRowStart, 0, barA);
-    tokenA = cuda::device::barrier_arrive_tx(barA, 1, sizeof(As));
-    cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, blockColStart, 0, barB);
-    tokenB = cuda::device::barrier_arrive_tx(barB, 1, sizeof(Bs));
-  } else {
-    tokenA = barA.arrive();
-    tokenB = barB.arrive();
+  for (int k=0; k<K; k+=32) {
+    if (threadIdx.x == 0) {
+      // Initiate bulk tensor copy from global to shared memory,
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, K, blockRowStart, barA);
+      tokenA = cuda::device::barrier_arrive_tx(barA, 1, sizeof(As));
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, K, blockColStart, barB);
+      tokenB = cuda::device::barrier_arrive_tx(barB, 1, sizeof(Bs));
+    } else {
+      tokenA = barA.arrive();
+      tokenB = barB.arrive();
+    }
+    barA.wait(std::move(tokenA));
+    barB.wait(std::move(tokenB));
+
+    wgmma_fence();
+    a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As), LBO, SBO, swizzle_mode);
+    b_desc = get_matrix_descriptor(__cvta_generic_to_shared(Bs), LBO, SBO, swizzle_mode);
+    wgmma_m64n64k16(a_desc, b_desc, dReg);
+    a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As+66), LBO, SBO, swizzle_mode);
+    b_desc = get_matrix_descriptor(__cvta_generic_to_shared(Bs+16), LBO, SBO, swizzle_mode);
+    wgmma_m64n64k16(a_desc, b_desc, dReg);
+    wgmma_commit_group();
+    wgmma_wait_all();
   }
 
-  barA.wait(std::move(tokenA));
-  barB.wait(std::move(tokenB));
+
+  /*
   if ((blockIdx.x==1) && (blockIdx.y==0) && (threadID==0)) {
     for (int i=0; i<128; i++) {
       for (int j=0; j<128; j++) {
@@ -123,7 +210,28 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
       printf("\n");
     }
   }
+  */
 
+  // Store from accum D registers to global memory
+  int warpGroupRow = warpID * 16;
+  int groupID     = laneID >> 2;
+  int groupLaneID = (laneID % 4);
+  float* cBlock = C + (blockRowStart + warpGroupRow + groupID) * N + blockColStart + groupLaneID; 
+  for (int col=0;col<64;col+=16) {
+      int regCol = col/2;
+      float2 d0 = make_float2(dReg[regCol+0], dReg[regCol+1]);
+      float2 d1 = make_float2(dReg[regCol+2], dReg[regCol+3]);
+      float2 d2 = make_float2(dReg[regCol+4], dReg[regCol+5]);
+      float2 d3 = make_float2(dReg[regCol+6], dReg[regCol+7]);
+      float2 *cOut0 = reinterpret_cast<float2 *>(cBlock + col);
+      float2 *cOut1 = reinterpret_cast<float2 *>(cBlock + 8*N + col);
+      float2 *cOut2 = reinterpret_cast<float2 *>(cBlock + col + 8);
+      float2 *cOut3 = reinterpret_cast<float2 *>(cBlock + 8*N + col + 8);
+      *cOut0 = d0;
+      *cOut1 = d1;
+      *cOut2 = d2;
+      *cOut3 = d3;
+  }
 }
 
 /*
