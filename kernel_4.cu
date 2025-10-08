@@ -111,9 +111,8 @@ __device__ void mma_m16n8k16_f16(const unsigned *A, const unsigned *B, unsigned 
 
 __forceinline__ 
 __device__ void wgmma_m64n64k16(const uint64_t a_desc, const uint64_t b_desc, float *D) {
-  asm (
-      //"mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
-      "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
+  asm volatile(
+      "wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 "
       "{%0, %1, %2, %3, %4, %5, %6, %7,"
        "%8, %9, %10, %11, %12, %13, %14, %15,"
        "%16, %17, %18, %19, %20, %21, %22, %23,"
@@ -147,8 +146,6 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
 
   int blockRowStart = blockIdx.y*64;
   int blockColStart = blockIdx.x*64;
-  const uint4 *globalTileA = reinterpret_cast<const uint4 *>(A + blockRowStart*K); 
-  const uint4 *globalTileB = reinterpret_cast<const uint4 *>(B + blockColStart*K);
 
   // warp layout is 2 x 4
   // (warp_0 | warp_1 | warp_2 | warp_3)
@@ -199,18 +196,12 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
   }
 
 
-  /*
-  if ((blockIdx.x==1) && (blockIdx.y==0) && (threadID==0)) {
-    for (int i=0; i<128; i++) {
-      for (int j=0; j<128; j++) {
-        if (j > 0)
-          printf(",");
-        printf("%5.1f", __half2float(As[i][j]));
-      }
-      printf("\n");
+  if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) {
+    for (int i=0; i<32; i++) {
+      printf("%5.1f, ", dReg[i]);
     }
+    printf("\n");
   }
-  */
 
   // Store from accum D registers to global memory
   int warpGroupRow = warpID * 16;

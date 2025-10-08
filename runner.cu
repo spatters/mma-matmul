@@ -320,8 +320,6 @@ int main(int argc, char **argv){
   h_B_T = new half[GLOBAL_N * GLOBAL_K];
   host_transpose(h_B, h_B_T, GLOBAL_K, GLOBAL_N);
   // debug
-  fill_arange(h_A, GLOBAL_M, GLOBAL_K);
-  cudaMemcpy(d_A, h_A, GLOBAL_M * GLOBAL_K * sizeof(half), cudaMemcpyHostToDevice);
   cudaMalloc(&d_B_T, GLOBAL_N * GLOBAL_K * sizeof(half));
   cudaMemcpy(d_B_T, h_B_T, GLOBAL_N * GLOBAL_K * sizeof(half), cudaMemcpyHostToDevice);
   cudaCheckErrors("cudaMemcpy malloc / H2D failure");
@@ -363,6 +361,26 @@ int main(int argc, char **argv){
     if (abs_diff > max_abs_diff)
       max_abs_diff = abs_diff;
   }
+  int row = 0;
+  int col = 0;
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col, h_C1[row*GLOBAL_N + col], row, col, h_C2[row*GLOBAL_N + col]);
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col+1, h_C1[row*GLOBAL_N + col+1], row, col+1, h_C2[row*GLOBAL_N + col+1]);
+  row = 8;
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col, h_C1[row*GLOBAL_N + col], row, col, h_C2[row*GLOBAL_N + col]);
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col+1, h_C1[row*GLOBAL_N + col+1], row, col+1, h_C2[row*GLOBAL_N + col+1]);
+  row = 0;
+  col = 8;
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col, h_C1[row*GLOBAL_N + col], row, col, h_C2[row*GLOBAL_N + col]);
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col+1, h_C1[row*GLOBAL_N + col+1], row, col+1, h_C2[row*GLOBAL_N + col+1]);
+  row = 8;
+  col = 8;
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col, h_C1[row*GLOBAL_N + col], row, col, h_C2[row*GLOBAL_N + col]);
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col+1, h_C1[row*GLOBAL_N + col+1], row, col+1, h_C2[row*GLOBAL_N + col+1]);
+  row = 56;
+  col = 0;
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col, h_C1[row*GLOBAL_N + col], row, col, h_C2[row*GLOBAL_N + col]);
+  printf("C1[%d][%d]: %f, C2[%d][%d]: %f\n", row, col+1, h_C1[row*GLOBAL_N + col+1], row, col+1, h_C2[row*GLOBAL_N + col+1]);
+
   printf("max abs diff %f, avg abs diff %f, avg diff: %f, avg output value; %f\n", max_abs_diff, avg_abs_diff, avg_diff, avg_out_val);
   return 0;
 }
