@@ -127,7 +127,7 @@ void create_tensor_map(half* globalPtr, CUtensorMap* tensor_map) {
   uint64_t stride[rank - 1] = {GLOBAL_K * sizeof(half)};
   // The box_size is the size of the shared memory buffer that is used as the
   // destination of a TMA transfer.
-  uint32_t box_size[rank] = {32, 128};
+  uint32_t box_size[rank] = {32, 64};
   // The distance between elements in units of sizeof(element). A stride of 2
   // can be used to load only the real component of a complex-valued tensor, for instance.
   uint32_t elem_stride[rank] = {1, 1};
@@ -260,13 +260,13 @@ void run_mma_kernel(int kernelNum, int numReps, half *A, half *B, half *B_T, flo
         mma_matmul_3_4<<<mma_grid, mma_block>>>(A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
         break;
       case 40:
-        mma_grid.x = ceilDiv(GLOBAL_M, 128);
-        mma_grid.y = ceilDiv(GLOBAL_N, 128);
+        dim3 wgmma_block(128);
+        dim3 wgmma_grid(ceilDiv(GLOBAL_M, 64), ceilDiv(GLOBAL_N, 64));
         CUtensorMap tensor_map_A{};
         create_tensor_map(A, &tensor_map_A);
         CUtensorMap tensor_map_B{};
-        create_tensor_map(B, &tensor_map_B);
-        wgmma_matmul_4_0<<<mma_grid, mma_block>>>(tensor_map_A, tensor_map_B, A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
+        create_tensor_map(B_T, &tensor_map_B);
+        wgmma_matmul_4_0<<<wgmma_grid, wgmma_block>>>(tensor_map_A, tensor_map_B, A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
         break;
     }
   }

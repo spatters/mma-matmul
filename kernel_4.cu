@@ -145,8 +145,8 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
   __shared__ barrier barA;
   __shared__ barrier barB;
 
-  int blockRowStart = blockIdx.y*128;
-  int blockColStart = blockIdx.x*128;
+  int blockRowStart = blockIdx.y*64;
+  int blockColStart = blockIdx.x*64;
   const uint4 *globalTileA = reinterpret_cast<const uint4 *>(A + blockRowStart*K); 
   const uint4 *globalTileB = reinterpret_cast<const uint4 *>(B + blockColStart*K);
 
@@ -176,9 +176,9 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
   for (int k=0; k<K; k+=32) {
     if (threadIdx.x == 0) {
       // Initiate bulk tensor copy from global to shared memory,
-      cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, K, blockRowStart, barA);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, k, blockRowStart, barA);
       tokenA = cuda::device::barrier_arrive_tx(barA, 1, sizeof(As));
-      cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, K, blockColStart, barB);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, k, blockColStart, barB);
       tokenB = cuda::device::barrier_arrive_tx(barB, 1, sizeof(Bs));
     } else {
       tokenA = barA.arrive();
@@ -191,7 +191,7 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
     a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As), LBO, SBO, swizzle_mode);
     b_desc = get_matrix_descriptor(__cvta_generic_to_shared(Bs), LBO, SBO, swizzle_mode);
     wgmma_m64n64k16(a_desc, b_desc, dReg);
-    a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As+66), LBO, SBO, swizzle_mode);
+    a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As+16), LBO, SBO, swizzle_mode);
     b_desc = get_matrix_descriptor(__cvta_generic_to_shared(Bs+16), LBO, SBO, swizzle_mode);
     wgmma_m64n64k16(a_desc, b_desc, dReg);
     wgmma_commit_group();
@@ -216,7 +216,7 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
   int warpGroupRow = warpID * 16;
   int groupID     = laneID >> 2;
   int groupLaneID = (laneID % 4);
-  float* cBlock = C + (blockRowStart + warpGroupRow + groupID) * N + blockColStart + groupLaneID; 
+  float* cBlock = C + (blockRowStart + warpGroupRow + groupID) * N + blockColStart + 2 * groupLaneID; 
   for (int col=0;col<64;col+=16) {
       int regCol = col/2;
       float2 d0 = make_float2(dReg[regCol+0], dReg[regCol+1]);
