@@ -202,12 +202,15 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
 
   if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) {
     for (int i=0; i<64; i++) {
-      printf("%d: ", i);
       for (int j=0; j<32; j++) {
+        if (j%8==0)
+          printf("%d, %d: ", i, j);
         half shared_a_val = As[i*32 + j];
-        half global_a_val = A[i*K + j];
+        half global_a_val = A[i*K + K-32 + j];
         //printf("A[%d][%d]: %f, %f\n", i, j, global_a_val, shared_a_val);
-        printf("%.3f, %.3f, ", __half2float(global_a_val), __half2float(shared_a_val));
+        printf("(%.3f, %.3f), ", __half2float(global_a_val), __half2float(shared_a_val));
+        if (j%8==7)
+          printf("\n");
       }
     }
   }
