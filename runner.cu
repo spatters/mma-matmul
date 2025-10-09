@@ -150,7 +150,8 @@ void create_tensor_map(half* globalPtr, CUtensorMap* tensor_map) {
     // are less than 4 bytes long.
     CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
     // Swizzling can be used to avoid shared memory bank conflicts.
-    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_64B,
+    //CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_64B,
+    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE,
     // L2 Promotion can be used to widen the effect of a cache-policy to a wider
     // set of L2 cache lines.
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
