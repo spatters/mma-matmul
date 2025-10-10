@@ -177,9 +177,11 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
   for (int k=0; k<K; k+=32) {
     if (threadIdx.x == 0) {
       // Initiate bulk tensor copy from global to shared memory,
-      cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, k, blockRowStart, barA);
+      //cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, k, blockRowStart, barA);
+      cde::cp_async_bulk_tensor_5d_global_to_shared(&As, &tensor_map_A, 0,0,0, blockRowStart/8, K/32, barA);
       tokenA = cuda::device::barrier_arrive_tx(barA, 1, sizeof(As));
-      cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, k, blockColStart, barB);
+      //cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, k, blockColStart, barB);
+      cde::cp_async_bulk_tensor_5d_global_to_shared(&Bs, &tensor_map_B,  0,0,0, blockColStart/8, K/32, barB);
       tokenB = cuda::device::barrier_arrive_tx(barB, 1, sizeof(Bs));
     } else {
       tokenA = barA.arrive();

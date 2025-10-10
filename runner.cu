@@ -120,17 +120,22 @@ void init_zero_half(half** host, half **device, int M, int N) {
 void create_tensor_map(half* globalPtr, CUtensorMap* tensor_map) {
   //CUtensorMap tensor_map{};
   // rank is the number of dimensions of the array.
-  constexpr uint32_t rank = 2;
-  uint64_t size[rank] = {GLOBAL_K, GLOBAL_M};
+  constexpr uint32_t rank = 5;
+  //uint64_t size[rank] = {GLOBAL_K, GLOBAL_M};
+  uint64_t size[rank] = {8, 8, 4, GLOBAL_M/8, GLOBAL_K/32};
   // The stride is the number of bytes to traverse from the first element of one row to the next.
   // It must be a multiple of 16.
-  uint64_t stride[rank - 1] = {GLOBAL_K * sizeof(half)};
+  //uint64_t stride[rank - 1] = {GLOBAL_K * sizeof(half)};
+  uint64_t T = sizeof(half);
+  uint64_t stride[rank - 1] = {GLOBAL_K*T, 8*T, 8*GLOBAL_K*T, 16*T};
   // The box_size is the size of the shared memory buffer that is used as the
   // destination of a TMA transfer.
-  uint32_t box_size[rank] = {32, 64};
+  //uint32_t box_size[rank] = {32, 64};
+  uint32_t box_size[rank] = {8, 8, 4, 8, 1};
   // The distance between elements in units of sizeof(element). A stride of 2
   // can be used to load only the real component of a complex-valued tensor, for instance.
-  uint32_t elem_stride[rank] = {1, 1};
+  //uint32_t elem_stride[rank] = {1, 1};
+  uint32_t elem_stride[rank] = {1, 1, 1, 1, 1};
 
   // Get a function pointer to the cuTensorMapEncodeTiled driver API.
   //auto cuTensorMapEncodeTiled = get_cuTensorMapEncodeTiled();
