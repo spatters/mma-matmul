@@ -26,8 +26,8 @@
 #define GLOBAL_M SIZE
 #define GLOBAL_N SIZE
 #define K_BLOCK 32 
-#define REPS 50
-#define WARMUP_REPS 5
+#define REPS 1
+#define WARMUP_REPS 0
 #define TOTAL_REPS REPS + WARMUP_REPS
 
 
@@ -117,25 +117,28 @@ void init_zero_half(half** host, half **device, int M, int N) {
   cudaMemcpy(*device, *host, M * N * sizeof(half), cudaMemcpyHostToDevice);
 }
 
-void create_tensor_map(half* globalPtr, CUtensorMap* tensor_map) {
+void create_tensor_map(half* globalPtr, CUtensorMap* tensor_map, uint64_t swizzle_mode) {
   //CUtensorMap tensor_map{};
   // rank is the number of dimensions of the array.
-  constexpr uint32_t rank = 5;
-  //uint64_t size[rank] = {GLOBAL_K, GLOBAL_M};
-  uint64_t size[rank] = {8, 8, 4, GLOBAL_M/8, GLOBAL_K/32};
+  constexpr uint32_t rank = 2;
+  uint64_t size[rank] = {GLOBAL_K, GLOBAL_M};
   // The stride is the number of bytes to traverse from the first element of one row to the next.
   // It must be a multiple of 16.
-  //uint64_t stride[rank - 1] = {GLOBAL_K * sizeof(half)};
-  uint64_t T = sizeof(half);
-  uint64_t stride[rank - 1] = {GLOBAL_K*T, 8*T, 8*GLOBAL_K*T, 16*T};
+  uint64_t stride[rank - 1] = {GLOBAL_K * sizeof(half)};
   // The box_size is the size of the shared memory buffer that is used as the
   // destination of a TMA transfer.
-  //uint32_t box_size[rank] = {32, 64};
-  uint32_t box_size[rank] = {8, 8, 4, 8, 1};
+  uint32_t box_size[rank] = {8, 64};
+  if (swizzle_mode==64)
+    box_size[0] = 32;
   // The distance between elements in units of sizeof(element). A stride of 2
   // can be used to load only the real component of a complex-valued tensor, for instance.
-  //uint32_t elem_stride[rank] = {1, 1};
-  uint32_t elem_stride[rank] = {1, 1, 1, 1, 1};
+  uint32_t elem_stride[rank] = {1, 1};
+  CUtensorMapSwizzle swizzle_type;
+  if (swizzle_mode==64) {
+    swizzle_type = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_64B;
+  } else {
+    swizzle_type = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE;
+  }
 
   // Get a function pointer to the cuTensorMapEncodeTiled driver API.
   //auto cuTensorMapEncodeTiled = get_cuTensorMapEncodeTiled();
@@ -154,14 +157,16 @@ void create_tensor_map(half* globalPtr, CUtensorMap* tensor_map) {
     // Interleave patterns can be used to accelerate loading of values that
     // are less than 4 bytes long.
     CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
+    //CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_16B,
     // Swizzling can be used to avoid shared memory bank conflicts.
     //CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_64B,
-    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE,
+    swizzle_type,
     // L2 Promotion can be used to widen the effect of a cache-policy to a wider
     // set of L2 cache lines.
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
     // Any element that is outside of bounds will be set to zero by the TMA transfer.
-    CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+    //CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+    CU_TENSOR_MAP_FLOAT_OOB_FILL_NAN_REQUEST_ZERO_FMA
   );
 }
 
@@ -218,6 +223,10 @@ void run_cublas_fp16_kernel(int numReps, half *A, half *B, half *C, int M, int N
 void run_mma_kernel(int kernelNum, int numReps, half *A, half *B, half *B_T, float *C, int M, int N, int K) {
   dim3 mma_block(16, 16);
   dim3 mma_grid;
+  dim3 wgmma_block(128);
+  dim3 wgmma_grid(ceilDiv(GLOBAL_M, 64), ceilDiv(GLOBAL_N, 64));
+  CUtensorMap tensor_map_A{};
+  CUtensorMap tensor_map_B{};
   for (int i=0; i<numReps; i++) {
     switch (kernelNum) {
       case 10:
@@ -266,13 +275,14 @@ void run_mma_kernel(int kernelNum, int numReps, half *A, half *B, half *B_T, flo
         mma_matmul_3_4<<<mma_grid, mma_block>>>(A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
         break;
       case 40:
-        dim3 wgmma_block(128);
-        dim3 wgmma_grid(ceilDiv(GLOBAL_M, 64), ceilDiv(GLOBAL_N, 64));
-        CUtensorMap tensor_map_A{};
-        create_tensor_map(A, &tensor_map_A);
-        CUtensorMap tensor_map_B{};
-        create_tensor_map(B_T, &tensor_map_B);
+        create_tensor_map(A, &tensor_map_A, 0);
+        create_tensor_map(B_T, &tensor_map_B, 0);
         wgmma_matmul_4_0<<<wgmma_grid, wgmma_block>>>(tensor_map_A, tensor_map_B, A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
+        break;
+      case 41:
+        create_tensor_map(A, &tensor_map_A, 64);
+        create_tensor_map(B_T, &tensor_map_B, 64);
+        wgmma_matmul_4_1<<<wgmma_grid, wgmma_block>>>(tensor_map_A, tensor_map_B, A, B_T, C, GLOBAL_M, GLOBAL_N, GLOBAL_K);
         break;
     }
   }

@@ -9,3 +9,4 @@ __global__ void mma_matmul_3_2(const half *A, const half *B, float *C, int M, in
 __global__ void mma_matmul_3_3(const half *A, const half *B, float *C, int M, int N, int K);
 __global__ void mma_matmul_3_4(const half *A, const half *B, float *C, int M, int N, int K);
 __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map_A, const 	__grid_constant__ CUtensorMap tensor_map_B, const half *A, const half *B, float *C, int M, int N, int K);
+__global__ void wgmma_matmul_4_1(const 	__grid_constant__ CUtensorMap tensor_map_A, const 	__grid_constant__ CUtensorMap tensor_map_B, const half *A, const half *B, float *C, int M, int N, int K);

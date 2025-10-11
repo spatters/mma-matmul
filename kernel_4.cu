@@ -141,8 +141,8 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
 
   // Initialize shared memory barrier
   #pragma nv_diag_suppress static_var_with_dynamic_init
-  __shared__ barrier barA;
-  __shared__ barrier barB;
+  __shared__ barrier barA0, barA1, barA2, barA3;
+  __shared__ barrier barB0, barB1, barB2, barB3;
 
   int blockRowStart = blockIdx.y*64;
   int blockColStart = blockIdx.x*64;
@@ -159,10 +159,177 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
   //constexpr int LBO = 1;
   //constexpr int SBO = 512;
   //constexpr int swizzle_mode = 2; //  64B swizzle
-  constexpr int LBO = 128;
-  constexpr int SBO = 256;
+  //constexpr int LBO = 1024;
+  //constexpr int SBO = 128;
+  //constexpr int LBO = 128;
+  //constexpr int SBO = 256;
+  constexpr int LBO = 1024;
+  constexpr int SBO = 128;
   constexpr int swizzle_mode = 0; //  64B swizzle
 
+
+
+  if (threadIdx.x == 0) {
+    init(&barA0, blockDim.x * blockDim.y);
+    init(&barB0, blockDim.x * blockDim.y);
+    init(&barA1, blockDim.x * blockDim.y);
+    init(&barB1, blockDim.x * blockDim.y);
+    init(&barA2, blockDim.x * blockDim.y);
+    init(&barB2, blockDim.x * blockDim.y);
+    init(&barA3, blockDim.x * blockDim.y);
+    init(&barB3, blockDim.x * blockDim.y);
+    cde::fence_proxy_async_shared_cta();
+  }
+
+  __syncthreads();
+  barrier::arrival_token tokenA0, tokenA1, tokenA2, tokenA3;
+  //barrier::arrival_token tokenB;
+  barrier::arrival_token tokenB0, tokenB1, tokenB2, tokenB3;
+  for (int k=0; k<K; k+=32) {
+    if (threadIdx.x == 0) {
+      // Initiate bulk tensor copy from global to shared memory,
+      //cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, k, blockRowStart, barA);
+      //tokenA = cuda::device::barrier_arrive_tx(barA, 1, sizeof(As));
+      //cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, k, blockColStart, barB);
+      //tokenB = cuda::device::barrier_arrive_tx(barB, 1, sizeof(Bs));
+
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, k, blockRowStart, barA0);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&As[512], &tensor_map_A, k+8, blockRowStart, barA1);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&As[1024], &tensor_map_A, k+16, blockRowStart, barA2);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&As[1536], &tensor_map_A, k+24, blockRowStart, barA3);
+      tokenA0 = cuda::device::barrier_arrive_tx(barA0, 1, sizeof(As)/4);
+      tokenA1 = cuda::device::barrier_arrive_tx(barA1, 1, sizeof(As)/4);
+      tokenA2 = cuda::device::barrier_arrive_tx(barA2, 1, sizeof(As)/4);
+      tokenA3 = cuda::device::barrier_arrive_tx(barA3, 1, sizeof(As)/4);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, k, blockColStart, barB0);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs[512], &tensor_map_B, k+8, blockColStart, barB1);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs[1024], &tensor_map_B, k+16, blockColStart, barB2);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs[1536], &tensor_map_B, k+24, blockColStart, barB3);
+      tokenB0 = cuda::device::barrier_arrive_tx(barB0, 1, sizeof(Bs)/4);
+      tokenB1 = cuda::device::barrier_arrive_tx(barB1, 1, sizeof(Bs)/4);
+      tokenB2 = cuda::device::barrier_arrive_tx(barB2, 1, sizeof(Bs)/4);
+      tokenB3 = cuda::device::barrier_arrive_tx(barB3, 1, sizeof(Bs)/4);
+    } else {
+      //tokenA = barA.arrive();
+      //tokenB = barB.arrive();
+
+      tokenA0 = barA0.arrive();
+      tokenA1 = barA1.arrive();
+      tokenA2 = barA2.arrive();
+      tokenA3 = barA3.arrive();
+
+      tokenB0 = barB0.arrive();
+      tokenB1 = barB1.arrive();
+      tokenB2 = barB2.arrive();
+      tokenB3 = barB3.arrive();
+    }
+    //barA.wait(std::move(tokenA));
+    //barB.wait(std::move(tokenB));
+    if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) 
+      printf("About to wait\n");
+
+    barA0.wait(std::move(tokenA0));
+    barA1.wait(std::move(tokenA1));
+    barA2.wait(std::move(tokenA2));
+    barA3.wait(std::move(tokenA3));
+
+    barB0.wait(std::move(tokenB0));
+    barB1.wait(std::move(tokenB1));
+    barB2.wait(std::move(tokenB2));
+    barB3.wait(std::move(tokenB3));
+
+    // Just manually copy in the format I think they need 
+    /*
+    if (threadIdx.x == 0) {
+      for (int i=0; i<64; i++) {
+        for (int j=0; j<32; j++) {
+          As[i*8 + j%8 + (j/8)*512] = A[blockRowStart*K + i*K + k + j];
+          Bs[i*8 + j%8 + (j/8)*512] = B[blockColStart*K + i*K + k + j];
+          //As[(i%8)*8 + j%8 + ((j%16)/8)*64 + (i/8)*128 + (j/16)*1024] = A[blockRowStart*K + i*K + k + j];
+          //Bs[(i%8)*8 + j%8 + ((j%16)/8)*64 + (i/8)*128 + (j/16)*1024] = B[blockColStart*K + i*K + k + j];
+        }
+      }
+    }
+    __syncthreads();
+    */
+    if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) 
+      printf("Done waiting\n");
+
+    wgmma_fence();
+    a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As), LBO, SBO, swizzle_mode);
+    b_desc = get_matrix_descriptor(__cvta_generic_to_shared(Bs), LBO, SBO, swizzle_mode);
+    wgmma_m64n64k16(a_desc, b_desc, dReg);
+    a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As+512*2), LBO, SBO, swizzle_mode);
+    b_desc = get_matrix_descriptor(__cvta_generic_to_shared(Bs+512*2), LBO, SBO, swizzle_mode);
+    //a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As+1024), LBO, SBO, swizzle_mode);
+    //b_desc = get_matrix_descriptor(__cvta_generic_to_shared(Bs+1024), LBO, SBO, swizzle_mode);
+    wgmma_m64n64k16(a_desc, b_desc, dReg);
+    wgmma_commit_group();
+    wgmma_wait_all();
+  }
+
+
+  if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) {
+    for (int i=0; i<64; i++) {
+      for (int j=0; j<32; j++) {
+        if (j%8==0)
+          printf("%d, %d: ", i, j);
+        half shared_a_val = As[i*8+j%8+(j/8)*512];
+        half global_a_val = A[i*K + K-32 + j];
+        //printf("A[%d][%d]: %f, %f\n", i, j, global_a_val, shared_a_val);
+        printf("(%.3f, %.3f), ", __half2float(global_a_val), __half2float(shared_a_val));
+        if (j%8==7)
+          printf("\n");
+      }
+    }
+  }
+
+  // Store from accum D registers to global memory
+  int warpGroupRow = warpID * 16;
+  int groupID     = laneID >> 2;
+  int groupLaneID = (laneID % 4);
+  float* cBlock = C + (blockRowStart + warpGroupRow + groupID) * N + blockColStart + 2 * groupLaneID; 
+  for (int col=0;col<64;col+=16) {
+      int regCol = col/2;
+      float2 d0 = make_float2(dReg[regCol+0], dReg[regCol+1]);
+      float2 d1 = make_float2(dReg[regCol+2], dReg[regCol+3]);
+      float2 d2 = make_float2(dReg[regCol+4], dReg[regCol+5]);
+      float2 d3 = make_float2(dReg[regCol+6], dReg[regCol+7]);
+      float2 *cOut0 = reinterpret_cast<float2 *>(cBlock + col);
+      float2 *cOut1 = reinterpret_cast<float2 *>(cBlock + 8*N + col);
+      float2 *cOut2 = reinterpret_cast<float2 *>(cBlock + col + 8);
+      float2 *cOut3 = reinterpret_cast<float2 *>(cBlock + 8*N + col + 8);
+      *cOut0 = d0;
+      *cOut1 = d1;
+      *cOut2 = d2;
+      *cOut3 = d3;
+  }
+}// Kernel 4.1: WAGMI SWIZZLE
+__global__ void wgmma_matmul_4_1(const 	__grid_constant__ CUtensorMap tensor_map_A, const 	__grid_constant__ CUtensorMap tensor_map_B, const half *A, const half *B, float *C, int M, int N, int K) {
+  __shared__ __align__(1024) half As[64*32];
+  __shared__ __align__(1024) half Bs[64*32];
+  float dReg[32] = {0.0f};
+
+  // Initialize shared memory barrier
+  #pragma nv_diag_suppress static_var_with_dynamic_init
+  __shared__ barrier barA;
+  __shared__ barrier barB;
+
+  int blockRowStart = blockIdx.y*64;
+  int blockColStart = blockIdx.x*64;
+
+  // warp layout is 2 x 4
+  // (warp_0 | warp_1 | warp_2 | warp_3)
+  // (warp_4 | warp_5 | warp_6 | warp_7)
+  int threadID = threadIdx.y * blockDim.x + threadIdx.x;
+  int warpID = threadID / 32;
+  int laneID = threadID % 32;
+  int warpOffsetA = 16 * (warpID / 4);
+  int warpOffsetB = 8 * (warpID % 4);
+  uint64_t a_desc, b_desc;
+  constexpr int LBO = 1;
+  constexpr int SBO = 512;
+  constexpr int swizzle_mode = 2; //  64B swizzle
 
 
   if (threadIdx.x == 0) {
@@ -171,24 +338,43 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
     cde::fence_proxy_async_shared_cta();
   }
 
-   __syncthreads();
+  __syncthreads();
   barrier::arrival_token tokenA;
   barrier::arrival_token tokenB;
   for (int k=0; k<K; k+=32) {
     if (threadIdx.x == 0) {
       // Initiate bulk tensor copy from global to shared memory,
-      //cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, k, blockRowStart, barA);
-      cde::cp_async_bulk_tensor_5d_global_to_shared(&As, &tensor_map_A, 0,0,0, blockRowStart/8, K/32, barA);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&As, &tensor_map_A, k, blockRowStart, barA);
       tokenA = cuda::device::barrier_arrive_tx(barA, 1, sizeof(As));
-      //cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, k, blockColStart, barB);
-      cde::cp_async_bulk_tensor_5d_global_to_shared(&Bs, &tensor_map_B,  0,0,0, blockColStart/8, K/32, barB);
+      cde::cp_async_bulk_tensor_2d_global_to_shared(&Bs, &tensor_map_B, k, blockColStart, barB);
       tokenB = cuda::device::barrier_arrive_tx(barB, 1, sizeof(Bs));
+
     } else {
       tokenA = barA.arrive();
       tokenB = barB.arrive();
     }
+
+    if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) 
+      printf("About to wait\n");
     barA.wait(std::move(tokenA));
     barB.wait(std::move(tokenB));
+
+    // Just manually copy in the format I think they need 
+    /*
+    if (threadIdx.x == 0) {
+      for (int i=0; i<64; i++) {
+        for (int j=0; j<32; j++) {
+          As[i*8 + j%8 + (j/8)*512] = A[blockRowStart*K + i*K + k + j];
+          Bs[i*8 + j%8 + (j/8)*512] = B[blockColStart*K + i*K + k + j];
+          //As[(i%8)*8 + j%8 + ((j%16)/8)*64 + (i/8)*128 + (j/16)*1024] = A[blockRowStart*K + i*K + k + j];
+          //Bs[(i%8)*8 + j%8 + ((j%16)/8)*64 + (i/8)*128 + (j/16)*1024] = B[blockColStart*K + i*K + k + j];
+        }
+      }
+    }
+    __syncthreads();
+    */
+    if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) 
+      printf("Done waiting\n");
 
     wgmma_fence();
     a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As), LBO, SBO, swizzle_mode);
@@ -207,7 +393,9 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
       for (int j=0; j<32; j++) {
         if (j%8==0)
           printf("%d, %d: ", i, j);
-        half shared_a_val = As[i*32 + j];
+        int swizz_row = i;
+        int swizz_col = j;
+        half shared_a_val = As[swizz_row*32 + 4*((swizz_col/8)^(swizz_row/8))+swizz_col%8];
         half global_a_val = A[i*K + K-32 + j];
         //printf("A[%d][%d]: %f, %f\n", i, j, global_a_val, shared_a_val);
         printf("(%.3f, %.3f), ", __half2float(global_a_val), __half2float(shared_a_val));
