@@ -225,8 +225,6 @@ __global__ void wgmma_matmul_4_0(const 	__grid_constant__ CUtensorMap tensor_map
     }
     //barA.wait(std::move(tokenA));
     //barB.wait(std::move(tokenB));
-    if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) 
-      printf("About to wait\n");
 
     barA0.wait(std::move(tokenA0));
     barA1.wait(std::move(tokenA1));
@@ -327,9 +325,9 @@ __global__ void wgmma_matmul_4_1(const 	__grid_constant__ CUtensorMap tensor_map
   int warpOffsetA = 16 * (warpID / 4);
   int warpOffsetB = 8 * (warpID % 4);
   uint64_t a_desc, b_desc;
-  constexpr int LBO = 1;
-  constexpr int SBO = 512;
-  constexpr int swizzle_mode = 2; //  64B swizzle
+  constexpr uint64_t LBO = 16;
+  constexpr uint64_t SBO = 512;
+  constexpr uint64_t swizzle_mode = 2llu; //  64B swizzle
 
 
   if (threadIdx.x == 0) {
@@ -354,8 +352,6 @@ __global__ void wgmma_matmul_4_1(const 	__grid_constant__ CUtensorMap tensor_map
       tokenB = barB.arrive();
     }
 
-    if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) 
-      printf("About to wait\n");
     barA.wait(std::move(tokenA));
     barB.wait(std::move(tokenB));
 
@@ -373,30 +369,31 @@ __global__ void wgmma_matmul_4_1(const 	__grid_constant__ CUtensorMap tensor_map
     }
     __syncthreads();
     */
-    if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) 
-      printf("Done waiting\n");
 
+    __syncthreads();
     wgmma_fence();
     a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As), LBO, SBO, swizzle_mode);
     b_desc = get_matrix_descriptor(__cvta_generic_to_shared(Bs), LBO, SBO, swizzle_mode);
     wgmma_m64n64k16(a_desc, b_desc, dReg);
-    a_desc = get_matrix_descriptor(__cvta_generic_to_shared(As+16), LBO, SBO, swizzle_mode);
-    b_desc = get_matrix_descriptor(__cvta_generic_to_shared(Bs+16), LBO, SBO, swizzle_mode);
+    a_desc = get_matrix_descriptor(__cvta_generic_to_shared(&As[16]), LBO, SBO, swizzle_mode);
+    b_desc = get_matrix_descriptor(__cvta_generic_to_shared(&Bs[16]), LBO, SBO, swizzle_mode);
     wgmma_m64n64k16(a_desc, b_desc, dReg);
     wgmma_commit_group();
     wgmma_wait_all();
   }
 
 
-  if ((blockIdx.x==0) && (blockIdx.y==0) && (threadID==0)) {
+  if ((blockIdx.x==31) && (blockIdx.y==17) && (threadID==0)) {
     for (int i=0; i<64; i++) {
       for (int j=0; j<32; j++) {
         if (j%8==0)
           printf("%d, %d: ", i, j);
         int swizz_row = i;
         int swizz_col = j;
-        half shared_a_val = As[swizz_row*32 + 4*((swizz_col/8)^(swizz_row/8))+swizz_col%8];
-        half global_a_val = A[i*K + K-32 + j];
+        half shared_a_val = As[swizz_row*32 + 8*((swizz_col/8)^((swizz_row/2)%4))+(swizz_col%8)];
+        //half shared_a_val = As[i*32 + 8*(j/8)+(j%8)];
+        //half shared_a_val = As[i*32 + j];
+        half global_a_val = A[(i+blockRowStart)*K + K-32 + j];
         //printf("A[%d][%d]: %f, %f\n", i, j, global_a_val, shared_a_val);
         printf("(%.3f, %.3f), ", __half2float(global_a_val), __half2float(shared_a_val));
         if (j%8==7)

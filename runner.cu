@@ -139,6 +139,7 @@ void create_tensor_map(half* globalPtr, CUtensorMap* tensor_map, uint64_t swizzl
   } else {
     swizzle_type = CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE;
   }
+  printf("Swizz mode: %d\n", swizzle_type);
 
   // Get a function pointer to the cuTensorMapEncodeTiled driver API.
   //auto cuTensorMapEncodeTiled = get_cuTensorMapEncodeTiled();
@@ -291,14 +292,14 @@ void run_mma_kernel(int kernelNum, int numReps, half *A, half *B, half *B_T, flo
 int main(int argc, char **argv){
   if (argc != 2) {
     printf("Please supply kernel number as argument.\n");
-    printf("Valid Kernel Numbers: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34, 40\n");
+    printf("Valid Kernel Numbers: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34, 40, 41\n");
     exit(EXIT_FAILURE);
   }
   int kernelNum = atoi(argv[1]);
-  int validKernels[12] = {0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34, 40};
-  bool validKernelNum = in_array(kernelNum, validKernels, 12);
+  int validKernels[13] = {0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34, 40, 41};
+  bool validKernelNum = in_array(kernelNum, validKernels, 13);
   if (not validKernelNum) {
-    printf("Kernel Num: %d not recognized. Valid Kernel Nums: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34, 40\n", kernelNum);
+    printf("Kernel Num: %d not recognized. Valid Kernel Nums: 0, 1, 10, 11, 20, 21, 30, 31, 32, 33, 34, 40, 41\n", kernelNum);
     exit(EXIT_FAILURE);
   }
   printf("Running Kernel %d.%d\n", kernelNum/10, kernelNum%10);
