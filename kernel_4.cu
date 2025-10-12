@@ -30,7 +30,7 @@ __device__ uint64_t get_matrix_descriptor(uint32_t shmem_start_addr, uint32_t LB
   base_descriptor |= (matrix_descriptor_encode(LBO) << 16);
   base_descriptor |= (matrix_descriptor_encode(SBO) << 32);
   // BASE OFFSET set to 0
-  base_descriptor |= (matrix_descriptor_encode(swizzle_mode) << 62);
+  base_descriptor |= ((uint64_t)swizzle_mode << 62);
   return base_descriptor;
 }
 
@@ -325,9 +325,9 @@ __global__ void wgmma_matmul_4_1(const 	__grid_constant__ CUtensorMap tensor_map
   int warpOffsetA = 16 * (warpID / 4);
   int warpOffsetB = 8 * (warpID % 4);
   uint64_t a_desc, b_desc;
-  constexpr uint64_t LBO = 16;
-  constexpr uint64_t SBO = 512;
-  constexpr uint64_t swizzle_mode = 2llu; //  64B swizzle
+  constexpr uint32_t LBO = 16;
+  constexpr uint32_t SBO = 512;
+  constexpr uint32_t swizzle_mode = 2; //  64B swizzle
 
 
   if (threadIdx.x == 0) {
